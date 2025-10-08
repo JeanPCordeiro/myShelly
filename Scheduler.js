@@ -8,7 +8,6 @@ var SET_PATH = "SetSchedule";      // URL écriture planning
 
 // === VARIABLES ===
 var planning = [];                 // 48 créneaux 0/1
-var lastState = -1;
 
 // === INITIALISATION DU PLANNING ===
 function initPlanning() {
@@ -26,9 +25,7 @@ function initPlanning() {
   });
 }
 
-initPlanning();
-
-// === SAUVEGARDE ===
+// === SAUVEGARDE DU PLANNING ===
 function savePlanning() {
   Shelly.call("KVS.Set", { key: KVS_KEY, value: JSON.stringify(planning) });
 }
@@ -43,15 +40,8 @@ function getCurrentSlot() {
 function applySchedule() {
   var slot = getCurrentSlot();
   var desired = planning[slot];
-
-  print("slot : ", slot);
-  print("desired : ", desired);
-
   Shelly.call("Switch.Set", { id: RELAY_ID, on: desired == 1 ? true : false });
 }
-
-// Vérifie et applique toutes les minutes
-Timer.set(CHECK_INTERVAL_MS, true, applySchedule);
 
 // === HANDLERS HTTP ===
 
@@ -66,15 +56,9 @@ function GetScheduleHandler(request, response) {
 
 // Écriture du planning
 function SetScheduleHandler(request, response) {
-  print("on est dans Set");
-  print("méthode =", request.method);
-
   var body = JSON.parse(request.body || "{}");
   planning = body.schedule || planning;
-
-  print(JSON.stringify(planning));
   savePlanning();
-
   var responseObject = { result: "OK" };
   response.body = JSON.stringify(responseObject);
   response.code = 200;
@@ -168,7 +152,14 @@ function httpServerHandler(request, response) {
   response.send();
 }
 
+
 // === ENREGISTREMENT DES ENDPOINTS ===
 HTTPServer.registerEndpoint(WEB_PATH, httpServerHandler);
 HTTPServer.registerEndpoint(GET_PATH, GetScheduleHandler);
 HTTPServer.registerEndpoint(SET_PATH, SetScheduleHandler);
+
+// Chargement du Planning
+initPlanning();
+
+// Vérifie et applique toutes les minutes
+Timer.set(CHECK_INTERVAL_MS, true, applySchedule);
