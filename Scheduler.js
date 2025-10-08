@@ -2,9 +2,9 @@
 var RELAY_ID = 0;                  // Relais du moteur de filtration
 var KVS_KEY = "pool_planning";     // Clé KVS
 var CHECK_INTERVAL_MS = 60000;     // Vérification chaque minute
-var WEB_PATH = "planning";      // URL page web
-var GET_PATH = "GetSchedule";      // URL page web
-var SET_PATH = "SetSchedule";      // URL page web
+var WEB_PATH = "planning";         // URL page web
+var GET_PATH = "GetSchedule";      // URL lecture planning
+var SET_PATH = "SetSchedule";      // URL écriture planning
 
 // === VARIABLES ===
 var planning = [];                 // 48 créneaux 0/1
@@ -12,14 +12,18 @@ var lastState = -1;
 
 // === INITIALISATION DU PLANNING ===
 function initPlanning() {
-  Shelly.call("KVS.GET",{key: KVS_KEY }, function(KVS_GET_RESULT) {
+  Shelly.call("KVS.GET", { key: KVS_KEY }, function (KVS_GET_RESULT) {
     if (KVS_GET_RESULT) {
       planning = JSON.parse(KVS_GET_RESULT.value);
+    } else {
+      planning = [
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0
+      ];
     }
-    else {
-      planning = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
-    }
-   });
+  });
 }
 
 initPlanning();
@@ -28,8 +32,6 @@ initPlanning();
 function savePlanning() {
   Shelly.call("KVS.Set", { key: KVS_KEY, value: JSON.stringify(planning) });
 }
-
-
 
 // === CALCUL CRÉNEAU ACTUEL ===
 function getCurrentSlot() {
@@ -41,79 +43,52 @@ function getCurrentSlot() {
 function applySchedule() {
   var slot = getCurrentSlot();
   var desired = planning[slot];
-  print("slot : ",slot);
-  print("desired : ",desired);
-  Shelly.call("Switch.Set", { id: RELAY_ID, on: desired==1 ? true : false });
+
+  print("slot : ", slot);
+  print("desired : ", desired);
+
+  Shelly.call("Switch.Set", { id: RELAY_ID, on: desired == 1 ? true : false });
 }
 
 // Vérifie et applique toutes les minutes
-
 Timer.set(CHECK_INTERVAL_MS, true, applySchedule);
 
-// === RPC ===
-// Lecture planning
-/*
-RPC.registerMethod("Filtration.GetSchedule", function(req) {
-  return { schedule: planning };
-});
-*/
+// === HANDLERS HTTP ===
 
-
+// Lecture du planning
 function GetScheduleHandler(request, response) {
-  const responseObject = { schedule: planning };
+  var responseObject = { schedule: planning };
   response.body = JSON.stringify(responseObject);
   response.code = 200;
-  response.headers = [['Content-Type', 'application/json']]
+  response.headers = [['Content-Type', 'application/json']];
   response.send();
 }
 
+// Écriture du planning
 function SetScheduleHandler(request, response) {
-  /*planning = [];
-  for (var i = 0; i < 48; i++) planning.push(request.schedule[i] ? 1 : 0);
-  savePlanning();
-  applySchedule();*/
   print("on est dans Set");
-  print("méthode =",request.method);
-      var body = JSON.parse(request.body || "{}");
-      planning = body.schedule || planning; 
+  print("méthode =", request.method);
+
+  var body = JSON.parse(request.body || "{}");
+  planning = body.schedule || planning;
+
   print(JSON.stringify(planning));
   savePlanning();
-  
-  const responseObject = { result: "OK" };
+
+  var responseObject = { result: "OK" };
   response.body = JSON.stringify(responseObject);
   response.code = 200;
-  response.headers = [['Content-Type', 'application/json']]
+  response.headers = [['Content-Type', 'application/json']];
   response.send();
 }
 
-// Écriture planning
-/*
-RPC.registerMethod("Filtration.SetSchedule", function(req) {
-  if (!req || !req.schedule) throw new Error("Missing schedule");
-  if (!(req.schedule instanceof Array) || req.schedule.length !== 48)
-    throw new Error("Invalid schedule array");
-
-  planning = [];
-  for (var i = 0; i < 48; i++) planning.push(req.schedule[i] ? 1 : 0);
-  savePlanning();
-  applySchedule();
-  return { result: "OK" };
-});
-*/
-
-
-/**
- * HTTP handler that will be called when the url will be accessed
- * @param request
- * @param response
- */
+// === PAGE WEB PRINCIPALE ===
 function httpServerHandler(request, response) {
   var info = Shelly.getDeviceInfo();
   var deviceName = info.name;
-  
-// === PAGE WEB ===
-var htmlPage =
-  '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Filtration Piscine</title>' +
+
+  var htmlPage =
+  '<!DOCTYPE html><html><head><meta charset="utf-8"><title>⏰ '+deviceName+'</title>' +
   '<style>' +
     'body{font-family:sans-serif;margin:20px;}' +
     'h2{text-align:center;}' +
@@ -124,12 +99,12 @@ var htmlPage =
     'button{margin-top:20px;padding:10px 20px;font-size:16px;cursor:pointer;}' +
     '.footer{margin-top:30px;text-align:center;color:gray;font-size:13px;}' +
   '</style></head><body>' +
-    '<h2>🌀 Programmation – ' + deviceName + '</h2>' +
+    '<h2>⏰ ' + deviceName + '</h2>' +
     '<p style="text-align:center;">Cliquez sur les cases pour activer/désactiver chaque demi-heure.</p>' +
     '<div class="grid" id="grid"></div>' +
     '<div style="text-align:center;"><button id="saveBtn">💾 Enregistrer</button></div>' +
     '<div style="text-align:center;margin-top:8px;"><button id="reloadBtn">↻ Recharger</button></div>' +
-    '<div class="footer">Shelly Pro 1 PM – Script</div>' +
+    '<div class="footer">(C) Jean Pierre Cordeiro</div>' +
     '<script>' +
       'function xhrJson(m,u,b,cb){' +
         'var x=new XMLHttpRequest();' +
@@ -187,13 +162,13 @@ var htmlPage =
       'loadPlanning();' +
     '</script></body></html>';
 
-
   response.body = htmlPage;
   response.code = 200;
-  response.headers = [['Content-Type', 'text/html; version=0.0.4']]
+  response.headers = [['Content-Type', 'text/html; version=0.0.4']];
   response.send();
 }
 
+// === ENREGISTREMENT DES ENDPOINTS ===
 HTTPServer.registerEndpoint(WEB_PATH, httpServerHandler);
 HTTPServer.registerEndpoint(GET_PATH, GetScheduleHandler);
 HTTPServer.registerEndpoint(SET_PATH, SetScheduleHandler);
