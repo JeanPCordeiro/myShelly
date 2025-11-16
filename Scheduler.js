@@ -120,7 +120,7 @@ function httpServerHandler(request, response) {
   var deviceName = info.name || "Shelly";
 
   var htmlPage =
-'<!DOCTYPE html><html><head><meta charset="utf-8"><title>Filtration Piscine</title>'+
+'<!DOCTYPE html><html><head><meta charset="utf-8"><title>'+deviceName+'</title>'+
 '<style>body{font-family:sans-serif;margin:20px}h2{text-align:center}.mode{text-align:center;margin:10px 0;background:#f5f5f5;padding:8px;border-radius:6px}.grid{display:grid;grid-template-columns:repeat(8,1fr);gap:6px;margin-top:20px}.slot{border:1px solid #ccc;padding:6px;text-align:center;cursor:pointer;border-radius:4px}.on{background:#4CAF50;color:#fff}.off{background:#eee;color:#333}button{margin-top:15px;padding:8px 16px;font-size:14px;cursor:pointer}.footer{text-align:center;margin-top:20px;color:gray;font-size:13px}</style></head>'+
 '<body><h2>⏰ Programmation – '+deviceName+'</h2>'+
 '<div class="mode"><label><input type="radio" name="mode" value="auto">Auto</label><label><input type="radio" name="mode" value="on">ON</label><label><input type="radio" name="mode" value="off">OFF</label><span id="st" style="display:inline-block;width:14px;height:14px;border-radius:50%;margin-left:20px;background:#999"></span></div>'+
