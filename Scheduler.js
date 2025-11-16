@@ -1,3 +1,11 @@
+/*
+Script  : Scheduler.js
+Author  : Jean Pierre Cordeiro
+Target  : Pool Scheduler with Web Admin Panel
+Ver     : 1.0
+Date    : 2025/11/16
+*/
+
 // === CONFIGURATION ===
 var RELAY_ID = 0;                  // Relais du moteur de filtration
 var KVS_KEY = "pool_planning";     // Clé KVS
