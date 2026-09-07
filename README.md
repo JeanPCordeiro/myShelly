@@ -8,7 +8,7 @@ A collection of Shelly IOT Devices scripts :
 
 ## Simulateur local
 
-Les scripts peuvent être exécutés sans matériel Shelly avec Node.js 18 ou plus récent. Le simulateur fournit les API utilisées dans ce dépôt (`Shelly.call`, KVS, relais, handlers de statut, timers et HTTP server) et avance le temps virtuel à partir d'un scénario JSON.
+Les scripts peuvent être exécutés sans matériel Shelly avec Node.js 18 ou plus récent. Le simulateur fournit les API utilisées dans ce dépôt (`Shelly.call`, KVS, relais, Virtual Components, timers et HTTP server) et exécute le script selon l'horloge réelle.
 
 Le KVS est automatiquement persisté entre deux lancements dans un fichier portant le nom racine du script. Pour `PoolSchedule.mjs`, le fichier créé est `PoolSchedule.kvs.json` :
 
@@ -24,25 +24,9 @@ Les timers sont réveillés automatiquement pendant l'exécution, sur l'horloge 
 node shelly-simulator.mjs PoolSchedule.mjs --run-seconds 3600
 ```
 
-Les callbacks de `Timer.set()` sont alors déclenchés à leur échéance réelle. Les délais `afterSeconds` des scénarios sont également mesurés en secondes réelles.
+Les callbacks de `Timer.set()` sont alors déclenchés à leur échéance réelle.
 
-Le simulateur prend également en charge les composants virtuels `number:200`, `text:200`, `text:201` et `boolean:200` utilisés par `PoolSchedule.mjs`. Leurs valeurs sont persistées automatiquement dans `PoolSchedule.virtuals.json`, séparément du KVS, puis restaurées au lancement suivant. `text:201` contient le dernier message du script, tronqué à 250 caractères, et peut être affiché dans Shelly Control. Activez `boolean:200` dans Shelly Control pour demander une réinitialisation complète.
-
-Exemple avec le suivi de chaudière :
-
-```sh
-node shelly-simulator.mjs Boiler.js simulator/boiler.json
-```
-
-Le scénario démarre avec 25000 cL, simule une puissance de 150 W pendant une heure, puis repasse à 0 W.
-
-Pour tester `PoolSchedule.mjs` avec une météo locale déterministe :
-
-```sh
-node shelly-simulator.mjs PoolSchedule.mjs simulator/pool.json
-```
-
-Ce scénario fournit une température initiale de 25 °C, évite l'initialisation historique et effectue réellement la requête Open-Meteo. Après une minute, le script doit avoir piloté le relais et enregistré une nouvelle valeur `pool_temp`. Une météo locale peut être injectée dans le JSON avec la propriété `weather` si un test hors ligne est nécessaire.
+Le simulateur prend en charge les Virtual Components déclarés dans le fichier `.virtuals.json`. Il n'en crée aucun implicitement : un appel à `Virtual.getHandle(id)` retourne `null` si l'identifiant n'est pas déclaré. Les valeurs sont persistées automatiquement dans `PoolSchedule.virtuals.json`, séparément du KVS, puis restaurées au lancement suivant. Pour `PoolSchedule.mjs`, les composants attendus sont `number:200`, `text:200`, `text:201` et `boolean:200`; `text:201` contient le dernier message et `boolean:200` déclenche une réinitialisation.
 
 Pour une piscine nouvellement remplie, configurer dans `PoolSchedule.mjs` :
 
@@ -51,28 +35,4 @@ let FILL_DATE = "2026-09-02";
 let INITIAL_WATER_TEMP = 12.0;
 ```
 
-Le script simule uniquement la période comprise entre `FILL_DATE` et aujourd'hui, puis mémorise `pool_fill_date` dans le KVS. Une modification de `FILL_DATE` relance automatiquement l'initialisation.
-
-Pour une piscine nouvellement remplie, renseigner dans `PoolSchedule.mjs` :
-
-```js
-let FILL_DATE = "2026-09-02";
-let INITIAL_WATER_TEMP = 12.0;
-```
-
 Le script simule uniquement la période comprise entre `FILL_DATE` et aujourd'hui, en partant de `INITIAL_WATER_TEMP`. Il mémorise ensuite `pool_fill_date` dans le KVS. Si la date de remplissage est modifiée, l'initialisation est automatiquement relancée.
-
-Un scénario suit cette forme :
-
-```json
-{
-	"startTime": "2026-01-01T08:00:00.000Z",
-	"kvs": { "OilLevel": 25000 },
-	"events": [
-		{ "power": 150 },
-		{ "afterSeconds": 3600, "power": 0 }
-	]
-}
-```
-
-`afterSeconds` avance l'horloge avant l'événement. Un événement peut aussi appeler un endpoint HTTP enregistré par le script : `{ "request": { "method": "GET", "path": "GetSchedule" } }`.
