@@ -1,0 +1,6 @@
+{
+  "number:200": 20,
+  "text:200": "auto",
+  "text:201": "[2026-09-07 14:58:50] [POOL_SCRIPT][ALIVE] 14:58 | Temp: 20.4°C | Mode: [AUTO] | Relay: ON | [0,0,0,0,0,0,0,0,1,1,0,1,1,0,1,1,0,1,1,0,1,1,0,0]",
+  "boolean:200": false
+}

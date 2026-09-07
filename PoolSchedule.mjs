@@ -10,32 +10,59 @@
  * ==============================================================================
  */
 
-// --- CONFIGURATION ---
+// --- PARAMETRES DE LA PISCINE ---
+// A adapter pour chaque installation et chaque remplissage.
 let LENGTH = 10.0;
 let WIDTH = 5.0;
 let DEPTH = 1.5;
 let COVER_TYPE = "enclosure"; // "none", "cover", "enclosure"
-let LATITUDE = "43.4142"; // Navailles-Angos
-let LONGITUDE = "-0.3417";
-let INITIALIZATION_DAYS = 90;
+let LATITUDE = "46.134"; // Aytré
+let LONGITUDE = "-1.115";
+let FILL_DATE = "2026-09-02"; // Date de remplissage, format YYYY-MM-DD
+let INITIAL_WATER_TEMP = 15.0; // Temperature de l'eau le jour du remplissage
 
+// --- PARAMETRES TECHNIQUES ---
+// Ne pas modifier sauf adaptation du fonctionnement du script.
+let KEY_POOL_TEMP = "pool_temp";
+let KEY_LAST_UPDATE_HOUR = "last_update_hour";
+let KEY_FILL_DATE = "pool_fill_date";
+let RESET_COMPONENT = "boolean:200";
+let LAST_LOG_COMPONENT = "text:201";
+
+// Valeurs calculees a partir des dimensions de la piscine.
 let SURFACE = LENGTH * WIDTH;
 let VOLUME = SURFACE * DEPTH;
 let WATER_MASS = VOLUME * 1000;
-let C_P = 4184;
 
+// Constantes physiques et URL des services externes.
+let C_P = 4184;
+let ARCHIVE_RETRY_DELAY_MS = 5000;
+let REALTIME_TIMEOUT_SECONDS = 15;
 let REALTIME_URL = "https://api.open-meteo.com/v1/forecast?latitude=" + LATITUDE + "&longitude=" + LONGITUDE + "&current=temperature_2m,relative_humidity_2m,wind_speed_10m,shortwave_radiation,cloud_cover";
+let ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive?latitude=" + LATITUDE + "&longitude=" + LONGITUDE + "&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m,shortwave_radiation,cloud_cover";
+let mainTimer = null;
+let resetComponent = Virtual.getHandle(RESET_COMPONENT);
+let lastLogComponent = Virtual.getHandle(LAST_LOG_COMPONENT);
+let resetInProgress = false;
+let realtimeRequestInProgress = false;
+
+function padTimePart(value) {
+    return value < 10 ? "0" + value : "" + value;
+}
+
+function getLogTimestamp() {
+    let now = new Date();
+    return now.getFullYear() + "-" + padTimePart(now.getMonth() + 1) + "-" + padTimePart(now.getDate()) +
+        " " + padTimePart(now.getHours()) + ":" + padTimePart(now.getMinutes()) + ":" + padTimePart(now.getSeconds());
+}
+
+function log(message) {
+    print(message);
+    if (lastLogComponent) lastLogComponent.setValue("[" + getLogTimestamp() + "] " + String(message).slice(0, 230));
+}
 
 /**
  * Polynomial approximation of water saturation vapor pressure (in kPa).
- * 
- * Algorithm Description:
- * Shelly's mJS engine lacks native support for complex mathematical operations 
- * like exponential functions (Math.exp). To compute vapor pressure without 
- * performance bottlenecks, this function uses a calibrated 2nd-degree polynomial equation:
- * P(T) = 0.0046 * T^2 - 0.0327 * T + 1.094
- * This approximates the Magnus-Tetens formula accurately within typical swimming pool 
- * operating temperatures (10°C to 35°C).
  */
 function approxVaporPressure(T) {
     return (0.0046 * T * T) - (0.0327 * T) + 1.094;
@@ -44,21 +71,6 @@ function approxVaporPressure(T) {
 /**
  * Computes the global heat balance (flux in W/m²) and derives the water 
  * temperature variation (Delta T) for a one-hour period.
- * 
- * Algorithm Description:
- * 1. Environmental inputs (air temp, humidity, wind, solar radiation, cloud cover) are retrieved.
- * 2. Physical coefficients (wind reduction, solar transmission, evaporation, convection, 
- *    and infrared radiation) are dynamically adjusted based on the pool's protection type 
- *    (none, cover, or enclosure).
- * 3. Energy fluxes per square meter are calculated:
- *    - Solar Flux: Direct and diffuse shortwave energy absorbed by the water volume.
- *    - Convection Flux: Sensible heat exchange caused by direct contact between air and water/cover.
- *    - Evaporation Flux: Latent heat loss due to water vaporization at the surface, modulated 
- *      by the vapor pressure difference between water and air.
- *    - Radiation Flux: Longwave infrared emission lost to the open sky or trapped by the enclosure.
- *    - Ground Flux: Conduction losses/gains toward surrounding earth stabilized at ~15°C.
- * 4. The total net energy flux is converted into a temperature increment (Delta T) over 
- *    one hour (3600 seconds) using the mass of water and specific heat capacity (C_p).
  */
 function calculateHeatBalance(weatherData, currentWaterTemp) {
     let t_air = weatherData.temperature_2m;
@@ -80,35 +92,25 @@ function calculateHeatBalance(weatherData, currentWaterTemp) {
         surface_wind = 0.1; solar_trans = 0.35; evap_coeff = 0.40; conv_coeff = 0.6; night_rad = 0.1;      
     }
 
-    // 1. Gain from direct and diffuse solar radiation absorbed by water
     let solar_flux = solar_rad * solar_trans;
     
-    // 2. Heat exchange via convection (direct contact with ambient air)
     let h_c = 3.1 + (4.1 * surface_wind);
     let conv_flux = h_c * (t_air - currentWaterTemp) * conv_coeff;
 
-    // 3. Evaporation losses (major cooling factor at the water surface)
     let p_water = approxVaporPressure(currentWaterTemp);
     let p_air = (rh / 100.0) * approxVaporPressure(t_air);
     let evap_flux = evap_coeff * (25 + (19 * surface_wind)) * (p_water - p_air);
     if (evap_flux < 0) evap_flux = 0;
 
-    // 4. Nighttime infrared radiation toward the sky / enclosure walls
     let sky_temp = t_air - (20 * (1 - clouds));
     let rad_flux = 5.0 * (sky_temp - currentWaterTemp) * night_rad;
     
-    // 5. Thermal conductivity toward the surrounding ground (stabilized around ~15°C)
     let ground_flux = 3.0 * (15.0 - currentWaterTemp);
 
-    // Total energy balance (Watts per square meter) converted into temperature variation (Delta T)
     let total_flux = solar_flux + conv_flux - evap_flux + rad_flux + ground_flux;
     return (total_flux * SURFACE * 3600) / (WATER_MASS * C_P);
 }
 
-/**
- * Formats a given date into a "YYYY-MM-DD" string format
- * to query Open-Meteo's historical API day by day.
- */
 function formatDate(daysAgo) {
     let d = new Date(Date.now() - (daysAgo * 86400000));
     let year = "" + d.getFullYear();
@@ -119,33 +121,36 @@ function formatDate(daysAgo) {
     return year + "-" + month + "-" + day;
 }
 
-/**
- * Asynchronous recursive initialization algorithm:
- * Goes back in time day by day over the defined period to simulate thermal history
- * and estimate a realistic starting temperature without saturating Shelly's memory.
- */
+function getDaysSinceFill() {
+    let fillTime = new Date(FILL_DATE + "T00:00:00").getTime();
+    let elapsedDays = Math.floor((Date.now() - fillTime) / 86400000);
+    return elapsedDays < 0 ? 0 : elapsedDays;
+}
+
 function fetchHistoricalDay(remainingDays, estimatedTemp, onComplete) {
     if (remainingDays === 0) {
-        print("[POOL_SCRIPT][fetchHistoricalDay] Initialization completed over " + INITIALIZATION_DAYS + " days! Estimated temp: " + estimatedTemp);
-        Shelly.call("KVS.Set", { key: "pool_temp", value: JSON.stringify(estimatedTemp) }, function() {
-            if (onComplete) { onComplete(); }
+        log("[POOL_SCRIPT][fetchHistoricalDay] Initialization completed since " + FILL_DATE + ". Estimated temp: " + estimatedTemp);
+        Shelly.call("KVS.Set", { key: KEY_POOL_TEMP, value: JSON.stringify(estimatedTemp) }, function() {
+            Shelly.call("KVS.Set", { key: KEY_FILL_DATE, value: FILL_DATE }, function() {
+                if (onComplete) { onComplete(); }
+            });
         });
         return;
     }
 
     let dateStr = formatDate(remainingDays);
-    let url = "https://api.open-meteo.com/v1/forecast?latitude=" + LATITUDE + "&longitude=" + LONGITUDE + 
-              "&hourly=temperature_2m,relative_humidity_2m,wind_speed_10m,shortwave_radiation,cloud_cover" + 
-              "&start_date=" + dateStr + "&end_date=" + dateStr;
+    let url = ARCHIVE_URL + "&start_date=" + dateStr + "&end_date=" + dateStr;
 
     Shelly.call("HTTP.GET", { url: url }, function(res, err) {
-        if (err || res.code !== 200) {
-            print("[POOL_SCRIPT][fetchHistoricalDay] Error for day " + dateStr + ", skipping.");
-            Timer.set(200, false, function() { fetchHistoricalDay(remainingDays - 1, estimatedTemp, onComplete); });
+        if (err || !res || res.code !== 200) {
+            let errorDetail = err ? err : (res ? "HTTP " + res.code : "No response");
+            log("[POOL_SCRIPT][fetchHistoricalDay] Error for day " + dateStr + ": " + errorDetail + ". Retrying.");
+            Timer.set(ARCHIVE_RETRY_DELAY_MS, false, function() { fetchHistoricalDay(remainingDays, estimatedTemp, onComplete); });
             return;
         }
 
         let data = JSON.parse(res.body);
+        let dayStartTemp = estimatedTemp;
         if (data && data.hourly && data.hourly.temperature_2m) {
             let totalHours = data.hourly.time.length;
             for (let i = 0; i < totalHours; i++) {
@@ -160,7 +165,9 @@ function fetchHistoricalDay(remainingDays, estimatedTemp, onComplete) {
             }
         }
 
-        print("[POOL_SCRIPT][fetchHistoricalDay] Day " + dateStr + " processed. Current temp: " + Math.round(estimatedTemp * 100) / 100 + "°C (" + remainingDays + " days remaining)");
+                log("[POOL_SCRIPT][fetchHistoricalDay] Temperature delta: " + (estimatedTemp - dayStartTemp) + "°C" +
+                            " | From: " + dayStartTemp + "°C | To: " + estimatedTemp + "°C");
+        log("[POOL_SCRIPT][fetchHistoricalDay] Day " + dateStr + " processed. Current temp: " + Math.round(estimatedTemp * 100) / 100 + "°C (" + remainingDays + " days remaining)");
 
         Timer.set(200, false, function() {
             fetchHistoricalDay(remainingDays - 1, estimatedTemp, onComplete);
@@ -168,23 +175,6 @@ function fetchHistoricalDay(remainingDays, estimatedTemp, onComplete) {
     });
 }
 
-/**
- * Calculates the required daily filtration runtime and generates an alternating 
- * hour-by-hour schedule (Strict 2h ON / 1h OFF alternation pattern) to protect the pump motor.
- * 
- * Algorithm Description:
- * 1. Runtime Determination:
- *    - If water temperature is < 12°C, sets runtime to 2 hours.
- *    - If water temperature is between 12°C and 16°C, sets runtime to 4 hours.
- *    - For higher temperatures, uses the standard rule of thumb: water temperature divided by 2 (e.g., 32°C -> 16 hours).
- *    - Applies safety bounds (minimum 2 hours, maximum 24 hours) and reduces runtime under an enclosure or cover if warm.
- * 2. Motor-Safe Alternating Schedule Generation (2h ON / 1h OFF blocks):
- *    - Creates an array of 24 hourly slots initialized to 0 (OFF).
- *    - Iterates through the day using 3-hour staggered slots (e.g., 8h-10h ON, with 11h serving as the 1h OFF cooling break) 
- *      to ensure the motor never runs continuously for excessive hours without a break.
- *    - Prioritizes daytime windows (starting around 8h) to capture peak solar radiation and UV impact, 
- *      then fills remaining required blocks across the rest of the schedule.
- */
 function scheduleFiltration(waterTemp) {
     let totalHours = (waterTemp < 12) ? 2 : ((waterTemp < 16) ? 4 : Math.round(waterTemp / 2));
     if (COVER_TYPE === "enclosure" && waterTemp >= 24) {
@@ -208,11 +198,8 @@ function scheduleFiltration(waterTemp) {
             schedule[h] = 1;       // 1st hour of the ON block
             schedule[h + 1] = 1;   // 2nd hour of the ON block
             blocksScheduled++;
-            // Hour h+2 automatically remains 0 (OFF), providing 1h of cooling rest before the next slot
         }
     }
-
-    print("[POOL_SCRIPT][scheduleFiltration] Generated 2h ON / 1h OFF schedule (0-23h): " + JSON.stringify(schedule));
     return schedule;
 }
 
@@ -220,9 +207,14 @@ function scheduleFiltration(waterTemp) {
 // TASK EXECUTED EVERY MINUTE (Relay control + Hourly check)
 // ---------------------------------------------------------
 function tickEveryMinute() {
-    Shelly.call("KVS.Get", { key: "pool_temp" }, function (resTemp, err) {
+    if (resetComponent && isResetRequested(resetComponent.getValue())) {
+        resetAndInitialize();
+        return;
+    }
+
+    Shelly.call("KVS.Get", { key: KEY_POOL_TEMP }, function (resTemp, err) {
         if (err || resTemp === null || resTemp.value === undefined) {
-            print("[POOL_SCRIPT][tickEveryMinute] Script currently performing historical initialization...");
+            log("[POOL_SCRIPT][tickEveryMinute] Script currently performing historical initialization...");
             return; 
         }
         
@@ -231,37 +223,78 @@ function tickEveryMinute() {
         let currentHour = d.getHours();
         let currentMinute = d.getMinutes();
         let currentHourStr = d.getFullYear() + "-" + (d.getMonth() + 1) + "-" + d.getDate() + "-" + currentHour;
+        
+        // 1. Update Virtual Components
+        let poolTempVC = Virtual.getHandle("number:200");
+        if (poolTempVC) poolTempVC.setValue(Math.round(waterTemp));
+        
+        // 2. Read Operating Mode
+        let currentMode = "auto"; 
+        let modeVC = Virtual.getHandle("text:200");
+        if (modeVC) {
+            let vcVal = modeVC.getValue();
+            if (vcVal) {
+                // Ensure lowercase for easy comparisons
+                currentMode = vcVal.toLowerCase(); 
+            }
+        }
 
-        // 1. Immediate relay control based on current hour and established schedule
+        // 3. Determine Relay State based on Mode
         let schedule = scheduleFiltration(waterTemp);
-        let shouldFilter = (schedule[currentHour] === 1);
-        Shelly.call("Switch.Set", { id: 0, on: shouldFilter });
+        let isAutoScheduledOn = (schedule[currentHour] === 1);
+        let relayState = isAutoScheduledOn; // Default to 'auto' behavior
+
+        if (currentMode === "on") {
+            relayState = true;
+        } else if (currentMode === "off") {
+            relayState = false;
+        } // if "auto", it simply stays as 'isAutoScheduledOn'
+
+        // Apply physical state
+        Shelly.call("Switch.Set", { id: 0, on: relayState });
 
         // HEARTBEAT LOG (Visual check for proper execution every minute)
-        print("[POOL_SCRIPT][tickEveryMinute][ALIVE] " + (currentHour < 10 ? "0" + currentHour : currentHour) + ":" + (currentMinute < 10 ? "0" + currentMinute : currentMinute) + 
-              " | Water: " + Math.round(waterTemp * 10) / 10 + "°C | Filtration: " + (shouldFilter ? "RUNNING (ON)" : "STOPPED (OFF)"));
+        log("[POOL_SCRIPT][ALIVE] " + (currentHour < 10 ? "0" + currentHour : currentHour) + ":" + (currentMinute < 10 ? "0" + currentMinute : currentMinute) + 
+              " | Temp: " + Math.round(waterTemp * 10) / 10 + "°C | Mode: [" + currentMode.toUpperCase() + "] | Relay: " + (relayState ? "ON" : "OFF") + " | " + JSON.stringify(schedule));
 
-        // 2. Hour change detection to trigger weather update and thermal calculation
-        Shelly.call("KVS.Get", { key: "last_update_hour" }, function (resHisto) {
+        // 4. Hour change detection to trigger weather update and thermal calculation
+        Shelly.call("KVS.Get", { key: KEY_LAST_UPDATE_HOUR }, function (resHisto) {
             let lastRecordedHour = "";
             if (resHisto && resHisto.value !== undefined) {
                 lastRecordedHour = JSON.parse(resHisto.value);
             }
 
             if (lastRecordedHour !== currentHourStr) {
-                print("[POOL_SCRIPT][tickEveryMinute] New hour detected (" + currentHour + "h): Starting thermal calculation.");
+                if (realtimeRequestInProgress) {
+                    log("[POOL_SCRIPT][tickEveryMinute] Weather request already in progress, waiting for response.");
+                    return;
+                }
+
+                realtimeRequestInProgress = true;
+                log("[POOL_SCRIPT][tickEveryMinute] New hour detected (" + currentHour + "h): Starting thermal calculation.");
                 
-                Shelly.call("HTTP.GET", { url: REALTIME_URL }, function (resHttp, error) {
-                    if (error || resHttp.code !== 200) { return; }
+                Shelly.call("HTTP.GET", { url: REALTIME_URL, timeout: REALTIME_TIMEOUT_SECONDS }, function(resHttp, error) {
+                    realtimeRequestInProgress = false;
+                    if (error || !resHttp || resHttp.code !== 200) {
+                        let errorDetail = error ? error : (resHttp ? "HTTP " + resHttp.code : "No response");
+                        log("[POOL_SCRIPT][tickEveryMinute] Open-Meteo request failed: " + errorDetail);
+                        return;
+                    }
 
                     let data = JSON.parse(resHttp.body);
+                      log("[POOL_SCRIPT][Open-Meteo] Air: " + data.current.temperature_2m + "°C" +
+                          " | Humidity: " + data.current.relative_humidity_2m + "%" +
+                          " | Wind: " + data.current.wind_speed_10m + " km/h" +
+                          " | Solar: " + data.current.shortwave_radiation + " W/m²" +
+                          " | Clouds: " + data.current.cloud_cover + "%");
                     let delta_t = calculateHeatBalance(data.current, waterTemp);
                     let newWaterTemp = waterTemp + delta_t;
                     
-                    print("[POOL_SCRIPT][tickEveryMinute] New calculated water temp: " + newWaterTemp);
+                                            log("[POOL_SCRIPT][tickEveryMinute] Temperature delta: " + delta_t + "°C");
+                                        log("[POOL_SCRIPT][tickEveryMinute] New calculated water temp: " + newWaterTemp);
                     
-                    Shelly.call("KVS.Set", { key: "pool_temp", value: JSON.stringify(newWaterTemp) });
-                    Shelly.call("KVS.Set", { key: "last_update_hour", value: JSON.stringify(currentHourStr) });
+                    Shelly.call("KVS.Set", { key: KEY_POOL_TEMP, value: JSON.stringify(newWaterTemp) });
+                    Shelly.call("KVS.Set", { key: KEY_LAST_UPDATE_HOUR, value: JSON.stringify(currentHourStr) });
                 });
             }
         });
@@ -271,19 +304,65 @@ function tickEveryMinute() {
 // ---------------------------------------------------------
 // SCRIPT STARTUP
 // ---------------------------------------------------------
-Shelly.call("KVS.Get", { key: "pool_temp" }, function (res, err) {
-    if (err || res === null || res.value === undefined) {
-        // First run: Full initialization over X days then activate minute timer
-        print("[POOL_SCRIPT][Startup] Starting initialization over " + INITIALIZATION_DAYS + " days...");
-        fetchHistoricalDay(INITIALIZATION_DAYS, 15.0, function() {
-            print("[POOL_SCRIPT][Startup] Initialization finished, activating minute timer.");
-            Timer.set(60000, true, function () { tickEveryMinute(); });
+function startInitialization() {
+    let initializationDays = getDaysSinceFill();
+    log("[POOL_SCRIPT][Startup] Starting initialization since " + FILL_DATE + " (" + initializationDays + " days)...");
+    fetchHistoricalDay(initializationDays, INITIAL_WATER_TEMP, function() {
+        resetInProgress = false;
+        log("[POOL_SCRIPT][Startup] Iniialization finished, activating minute timer.");
+        mainTimer = Timer.set(60000, true, function () { tickEveryMinute(); });
+    });
+}
+
+function resetAndInitialize() {
+    if (resetInProgress) return;
+    resetInProgress = true;
+    log("[POOL_SCRIPT][Startup] Reset requested from Shelly Control.");
+    if (mainTimer !== null) {
+        Timer.clear(mainTimer);
+        mainTimer = null;
+    }
+    if (resetComponent) {
+        log("[POOL_SCRIPT][Startup] Reset command acknowledged, clearing KVS.");
+        resetComponent.setValue(false);
+    }
+
+    Shelly.call("KVS.Delete", { key: KEY_POOL_TEMP }, function() {
+        Shelly.call("KVS.Delete", { key: KEY_LAST_UPDATE_HOUR }, function() {
+            Shelly.call("KVS.Delete", { key: KEY_FILL_DATE }, function() {
+                log("[POOL_SCRIPT][Startup] KVS cleared, restarting initialization.");
+                startInitialization();
+            });
         });
+    });
+}
+
+function startScript() {
+    if (resetComponent && isResetRequested(resetComponent.getValue())) {
+        resetAndInitialize();
+        return;
+    }
+
+    Shelly.call("KVS.Get", { key: KEY_POOL_TEMP }, function (res, err) {
+    if (err || res === null || res.value === undefined) {
+        startInitialization();
     } else {
-        // Normal startup (value already present in memory)
-        print("[POOL_SCRIPT][Startup] Normal startup, activating minute timer.");
-        Timer.set(60000, true, function () { tickEveryMinute(); });
-        // Immediate execution of the first check
-        tickEveryMinute();
+        Shelly.call("KVS.GET", { key: KEY_FILL_DATE }, function (fillDateResult) {
+            if (!fillDateResult || fillDateResult.value !== FILL_DATE) {
+                startInitialization();
+                return;
+            }
+
+            log("[POOL_SCRIPT][Startup] Normal startup, activating minute timer.");
+            mainTimer = Timer.set(60000, true, function () { tickEveryMinute(); });
+            tickEveryMinute();
+        });
     }
 });
+}
+
+function isResetRequested(value) {
+    return value === true || value === 1 || value === "true";
+}
+
+startScript();

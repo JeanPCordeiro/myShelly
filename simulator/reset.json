@@ -1,0 +1,16 @@
+{
+  "virtualsFile": "/tmp/poolschedule-reset.virtuals.json",
+  "virtuals": {
+    "boolean:200": { "value": false }
+  },
+  "events": [
+    {
+      "afterSeconds": 2,
+      "virtual": {
+        "id": "boolean:200",
+        "value": true
+      }
+    }
+  ],
+  "finishAfterSeconds": 4
+}
