@@ -75,7 +75,7 @@ function getLogTimestamp() {
 
 function log(message) {
     print(message);
-    if (lastLogComponent) lastLogComponent.setValue("[" + getLogTimestamp() + "] " + String(message).slice(0, 230));
+    if (lastLogComponent) lastLogComponent.setValue(String(message).slice(0, 230));
 }
 
 /**
@@ -265,6 +265,22 @@ function scheduleFiltration(waterTemp, weatherData) {
     return schedule;
 }
 
+function formatScheduleBlocks(schedule) {
+    let blocks = [];
+    let blockStart = -1;
+
+    for (let hour = 0; hour <= 24; hour++) {
+        let isOn = hour < 24 && schedule[hour] === 1;
+        if (isOn && blockStart === -1) {
+            blockStart = hour;
+        } else if (!isOn && blockStart !== -1) {
+            blocks.push(padTimePart(blockStart) + ":00–" + padTimePart(hour) + ":00");
+            blockStart = -1;
+        }
+    }
+    return blocks.join(", ");
+}
+
 // ---------------------------------------------------------
 // TASK EXECUTED EVERY MINUTE (Relay control + Hourly check)
 // ---------------------------------------------------------
@@ -315,9 +331,16 @@ function tickEveryMinute() {
         // Apply physical state
         Shelly.call("Switch.Set", { id: 0, on: relayState });
 
-        // HEARTBEAT LOG (Visual check for proper execution every minute)
-        log("[POOL_SCRIPT][ALIVE] " + (currentHour < 10 ? "0" + currentHour : currentHour) + ":" + (currentMinute < 10 ? "0" + currentMinute : currentMinute) + 
-              " | Temp: " + Math.round(waterTemp * 10) / 10 + "°C | Mode: [" + currentMode.toUpperCase() + "] | Relay: " + (relayState ? "ON" : "OFF") + " | " + JSON.stringify(schedule));
+          let scheduledHours = 0;
+          for (let hour = 0; hour < 24; hour++) {
+            if (schedule[hour] === 1) scheduledHours++;
+          }
+          let airLog = latestWeatherData ? Math.round(latestWeatherData.temperature_2m * 10) / 10 + "°C" : "n/a";
+          let windLog = latestWeatherData ? latestWeatherData.wind_speed_10m + " km/h" : "n/a";
+          log("[POOL_SCRIPT] " + (currentHour < 10 ? "0" + currentHour : currentHour) + ":" + (currentMinute < 10 ? "0" + currentMinute : currentMinute) +
+              " | Temp: " + Math.round(waterTemp * 10) / 10 + "°C | Air: " + airLog + " | Wind: " + windLog +
+              " | Mode: " + currentMode.toUpperCase() + " | Relay: " + (relayState ? "ON" : "OFF") +
+              " | Filtration: " + scheduledHours + " h | Blocks: " + formatScheduleBlocks(schedule));
 
         // 4. Hour change detection to trigger weather update and thermal calculation
         Shelly.call("KVS.Get", { key: KEY_LAST_UPDATE_HOUR }, function (resHisto) {

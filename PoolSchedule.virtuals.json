@@ -1,6 +1,6 @@
 {
   "number:200": 23,
   "text:200": "auto",
-  "text:201": "[2026-09-08 13:46:07] [POOL_SCRIPT][ALIVE] 13:46 | Temp: 23.5°C | Mode: [AUTO] | Relay: ON | [0,0,0,0,0,0,0,0,1,1,1,0,0,1,1,1,0,1,0,0,0,0,0,0]",
+  "text:201": "[POOL_SCRIPT] 14:01 | Temp: 23.4°C | Air: 20.2°C | Wind: 29.1 km/h | Mode: AUTO | Relay: ON | Filtration: 7 h | Blocks: 08:00–11:00, 13:00–16:00, 17:00–18:00",
   "boolean:200": false
 }
