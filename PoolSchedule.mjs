@@ -12,14 +12,30 @@
 
 // --- PARAMETRES DE LA PISCINE ---
 // A adapter pour chaque installation et chaque remplissage.
-let LENGTH = 10.0;
-let WIDTH = 5.0;
+let LENGTH = 5.0;
+let WIDTH = 3.0;
 let DEPTH = 1.5;
-let COVER_TYPE = "enclosure"; // "none", "cover", "enclosure"
+let COVER_TYPE = "none"; // "none", "cover", "enclosure"
 let LATITUDE = "46.134"; // Aytré
 let LONGITUDE = "-1.115";
 let FILL_DATE = "2026-09-02"; // Date de remplissage, format YYYY-MM-DD
 let INITIAL_WATER_TEMP = 15.0; // Temperature de l'eau le jour du remplissage
+let PUMP_FLOW_M3H = 10.0; // Debit reel estime de la pompe, en m3/h
+
+// --- PARAMETRES DE L'ALGORITHME ---
+// A adapter selon la pompe, les contraintes de voisinage et le climat.
+let TARGET_TURNOVERS = 3.0; // Nombre de renouvellements du volume par jour en usage normal
+let MIN_FILTRATION_HOURS = 4;
+let MAX_FILTRATION_HOURS = 24; // Plafond technique; la plage silencieuse fixe la limite effective
+let FREEZE_PROTECTION_WATER_TEMP = 3; // Secours si l'eau descend a ce seuil
+let HEATWAVE_WATER_TEMP = 28; // Debut de la majoration canicule
+let EXTREME_HEAT_WATER_TEMP = 30; // Renforcement de la filtration par forte chaleur
+let FREEZE_PROTECTION_AIR_TEMP = 2; // Protection si la temperature exterieure est proche du gel
+let HEATWAVE_AIR_TEMP = 32; // Renforcement si l'air est tres chaud
+let EXTREME_HEAT_AIR_TEMP = 35;
+let HIGH_WIND_SPEED = 30; // Vent fort en km/h : risque accru de debris et d'evaporation
+let QUIET_START_HOUR = 22; // Debut de la periode silencieuse
+let QUIET_END_HOUR = 7; // Fin de la periode silencieuse
 
 // --- PARAMETRES TECHNIQUES ---
 // Ne pas modifier sauf adaptation du fonctionnement du script.
@@ -45,6 +61,7 @@ let resetComponent = Virtual.getHandle(RESET_COMPONENT);
 let lastLogComponent = Virtual.getHandle(LAST_LOG_COMPONENT);
 let resetInProgress = false;
 let realtimeRequestInProgress = false;
+let latestWeatherData = null;
 
 function padTimePart(value) {
     return value < 10 ? "0" + value : "" + value;
@@ -175,29 +192,74 @@ function fetchHistoricalDay(remainingDays, estimatedTemp, onComplete) {
     });
 }
 
-function scheduleFiltration(waterTemp) {
-    let totalHours = (waterTemp < 12) ? 2 : ((waterTemp < 16) ? 4 : Math.round(waterTemp / 2));
-    if (COVER_TYPE === "enclosure" && waterTemp >= 24) {
-        totalHours = Math.max(totalHours - 2, 8);
-    } else if (COVER_TYPE === "cover") {
-        totalHours = Math.max(totalHours - 1, 6);
+function scheduleFiltration(waterTemp, weatherData) {
+    let airTemp = weatherData ? weatherData.temperature_2m : null;
+    let windSpeed = weatherData ? weatherData.wind_speed_10m : 0;
+    let freezeProtection = waterTemp <= FREEZE_PROTECTION_WATER_TEMP ||
+        (airTemp !== null && airTemp <= FREEZE_PROTECTION_AIR_TEMP);
+
+    if (freezeProtection) {
+        return [1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1];
     }
-    if (totalHours > 24) totalHours = 24;
-    if (totalHours < 2) totalHours = 2;
+
+    let volumeTurnoverHours = VOLUME / PUMP_FLOW_M3H;
+    let temperatureFactor = 1.0;
+
+    if (waterTemp < 12) {
+        temperatureFactor = 0.75;
+    } else if (waterTemp < 16) {
+        temperatureFactor = 0.9;
+    } else if (waterTemp >= 24 && waterTemp < HEATWAVE_WATER_TEMP) {
+        temperatureFactor = 1.25;
+    } else if (waterTemp >= EXTREME_HEAT_WATER_TEMP ||
+               (airTemp !== null && airTemp >= EXTREME_HEAT_AIR_TEMP)) {
+        temperatureFactor = 2.0;
+    } else if (waterTemp >= HEATWAVE_WATER_TEMP ||
+               (airTemp !== null && airTemp >= HEATWAVE_AIR_TEMP)) {
+        temperatureFactor = 1.5;
+    }
+
+    if (windSpeed >= HIGH_WIND_SPEED) temperatureFactor += 0.25;
+
+    let allowedHours = [];
+    for (let hour = 0; hour < 24; hour++) {
+        let isQuietHour = QUIET_START_HOUR > QUIET_END_HOUR ?
+            (hour >= QUIET_START_HOUR || hour < QUIET_END_HOUR) :
+            (hour >= QUIET_START_HOUR && hour < QUIET_END_HOUR);
+        if (!isQuietHour) allowedHours.push(hour);
+    }
+
+    let totalHours = Math.round(volumeTurnoverHours * TARGET_TURNOVERS * temperatureFactor);
+    if (totalHours < MIN_FILTRATION_HOURS) totalHours = MIN_FILTRATION_HOURS;
+    let effectiveMaxHours = Math.min(MAX_FILTRATION_HOURS, allowedHours.length);
+    if (totalHours > effectiveMaxHours) totalHours = effectiveMaxHours;
 
     let schedule = [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0];
-    
-    // Slots spaced by 3 hours (2h ON + 1h natural OFF before the next block)
-    let candidateSlots = [8, 11, 14, 17, 20, 5, 2]; 
-    let blocksNeeded = Math.round(totalHours / 2);
-    let blocksScheduled = 0;
+    let isHotOrWindy = waterTemp >= HEATWAVE_WATER_TEMP ||
+        (airTemp !== null && airTemp >= HEATWAVE_AIR_TEMP) ||
+        windSpeed >= HIGH_WIND_SPEED;
+    let windowStarts = isHotOrWindy ? [10, 13, 16, 19] : [8, 13, 17, 20];
+    let remainingHours = totalHours;
 
-    for (let i = 0; i < candidateSlots.length; i++) {
-        if (blocksScheduled < blocksNeeded) {
-            let h = candidateSlots[i];
-            schedule[h] = 1;       // 1st hour of the ON block
-            schedule[h + 1] = 1;   // 2nd hour of the ON block
-            blocksScheduled++;
+    // Repartit la filtration dans des fenetres diurnes, avec des blocs de trois heures maximum.
+    for (let windowIndex = 0; windowIndex < windowStarts.length && remainingHours > 0; windowIndex++) {
+        let blockHours = Math.min(3, remainingHours);
+        let startHour = windowStarts[windowIndex];
+        for (let offset = 0; offset < blockHours; offset++) {
+            let hour = startHour + offset;
+            if (allowedHours.indexOf(hour) !== -1 && schedule[hour] === 0) {
+                schedule[hour] = 1;
+                remainingHours--;
+            }
+        }
+    }
+
+    // Secours si une configuration horaire supprime une fenetre preferee.
+    for (let index = 0; index < allowedHours.length && remainingHours > 0; index++) {
+        let hour = allowedHours[index];
+        if (schedule[hour] === 0) {
+            schedule[hour] = 1;
+            remainingHours--;
         }
     }
     return schedule;
@@ -240,7 +302,7 @@ function tickEveryMinute() {
         }
 
         // 3. Determine Relay State based on Mode
-        let schedule = scheduleFiltration(waterTemp);
+        let schedule = scheduleFiltration(waterTemp, latestWeatherData);
         let isAutoScheduledOn = (schedule[currentHour] === 1);
         let relayState = isAutoScheduledOn; // Default to 'auto' behavior
 
@@ -282,6 +344,7 @@ function tickEveryMinute() {
                     }
 
                     let data = JSON.parse(resHttp.body);
+                    latestWeatherData = data.current;
                       log("[POOL_SCRIPT][Open-Meteo] Air: " + data.current.temperature_2m + "°C" +
                           " | Humidity: " + data.current.relative_humidity_2m + "%" +
                           " | Wind: " + data.current.wind_speed_10m + " km/h" +

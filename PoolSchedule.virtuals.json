@@ -1,6 +1,6 @@
 {
-  "number:200": 20,
+  "number:200": 23,
   "text:200": "auto",
-  "text:201": "[2026-09-07 16:18:12] [POOL_SCRIPT][tickEveryMinute] New calculated water temp: 20.30692015836398",
+  "text:201": "[2026-09-08 13:46:07] [POOL_SCRIPT][ALIVE] 13:46 | Temp: 23.5°C | Mode: [AUTO] | Relay: ON | [0,0,0,0,0,0,0,0,1,1,1,0,0,1,1,1,0,1,0,0,0,0,0,0]",
   "boolean:200": false
 }
